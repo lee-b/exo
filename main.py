@@ -5,6 +5,7 @@ import json
 import time
 import traceback
 import uuid
+import logging
 from exo.orchestration.standard_node import StandardNode
 from exo.networking.grpc.grpc_server import GRPCServer
 from exo.networking.udp_discovery import UDPDiscovery
@@ -13,13 +14,16 @@ from exo.topology.ring_memory_weighted_partitioning_strategy import RingMemoryWe
 from exo.api import ChatGPTAPI
 from exo.download.shard_download import ShardDownloader, RepoProgressEvent
 from exo.download.hf.hf_shard_download import HFShardDownloader
-from exo.helpers import print_yellow_exo, find_available_port, DEBUG, get_system_info, get_or_create_node_id, get_all_ip_addresses, terminal_link
+from exo.helpers import print_yellow_exo, find_available_port, get_system_info, get_or_create_node_id, get_all_ip_addresses, terminal_link
 from exo.inference.shard import Shard
 from exo.inference.inference_engine import get_inference_engine, InferenceEngine
 from exo.inference.tokenizers import resolve_tokenizer
 from exo.orchestration.node import Node
 from exo.models import model_base_shards
 from exo.viz.topology_viz import TopologyViz
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Initialize GRPC Discovery")
@@ -46,24 +50,23 @@ def setup_inference_engine(args, system_info):
     shard_downloader = HFShardDownloader(quick_check=args.download_quick_check, max_parallel_downloads=args.max_parallel_downloads)
     inference_engine_name = args.inference_engine or ("mlx" if system_info == "Apple Silicon Mac" else "tinygrad")
     inference_engine = get_inference_engine(inference_engine_name, shard_downloader)
-    print(f"Using inference engine: {inference_engine.__class__.__name__} with shard downloader: {shard_downloader.__class__.__name__}")
+    logger.info(f"Using inference engine: {inference_engine.__class__.__name__} with shard downloader: {shard_downloader.__class__.__name__}")
     return shard_downloader, inference_engine
 
 def setup_node(args, inference_engine):
     if args.node_port is None:
         args.node_port = find_available_port(args.node_host)
-        if DEBUG >= 1: print(f"Using available port: {args.node_port}")
+        logger.info(f"Using available port: {args.node_port}")
 
     args.node_id = args.node_id or get_or_create_node_id()
     chatgpt_api_endpoints = [f"http://{ip}:{args.chatgpt_api_port}/v1/chat/completions" for ip in get_all_ip_addresses()]
     web_chat_urls = [f"http://{ip}:{args.chatgpt_api_port}" for ip in get_all_ip_addresses()]
-    if DEBUG >= 0:
-        print("Chat interface started:")
-        for web_chat_url in web_chat_urls:
-            print(f" - {terminal_link(web_chat_url)}")
-        print("ChatGPT API endpoint served at:")
-        for chatgpt_api_endpoint in chatgpt_api_endpoints:
-            print(f" - {terminal_link(chatgpt_api_endpoint)}")
+    logger.info("Chat interface started:")
+    for web_chat_url in web_chat_urls:
+        logger.info(f" - {terminal_link(web_chat_url)}")
+    logger.info("ChatGPT API endpoint served at:")
+    for chatgpt_api_endpoint in chatgpt_api_endpoints:
+        logger.info(f" - {terminal_link(chatgpt_api_endpoint)}")
 
     discovery = UDPDiscovery(args.node_id, args.node_port, args.listen_port, args.broadcast_port, lambda peer_id, address, device_capabilities: GRPCPeerHandle(peer_id, address, device_capabilities), discovery_timeout=args.discovery_timeout)
     topology_viz = TopologyViz(chatgpt_api_endpoints=chatgpt_api_endpoints, web_chat_urls=web_chat_urls) if not args.disable_tui else None
@@ -98,12 +101,10 @@ def setup_preemptive_download(node, shard_downloader):
             status = json.loads(opaque_status)
             if status.get("type") == "node_status" and status.get("status") == "start_process_prompt":
                 current_shard = node.get_current_shard(Shard.from_dict(status.get("shard")))
-                if DEBUG >= 2: print(f"Preemptively starting download for {current_shard}")
+                logger.debug(f"Preemptively starting download for {current_shard}")
                 asyncio.create_task(shard_downloader.ensure_shard(current_shard))
         except Exception as e:
-            if DEBUG >= 2:
-                print(f"Failed to preemptively start download: {e}")
-                traceback.print_exc()
+            logger.exception(f"Failed to preemptively start download: {e}")
     node.on_opaque_status.register("start_download").on_next(preemptively_start_download)
 
 def setup_prometheus_metrics(node, port):
@@ -122,12 +123,12 @@ def setup_throttled_broadcast(node):
     return throttled_broadcast
 
 async def shutdown(signal, loop, server):
-    print(f"Received exit signal {signal.name}...")
-    print("Thank you for using exo.")
+    logger.info(f"Received exit signal {signal.name}...")
+    logger.info("Thank you for using exo.")
     print_yellow_exo()
     server_tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     [task.cancel() for task in server_tasks]
-    print(f"Cancelling {len(server_tasks)} outstanding tasks")
+    logger.info(f"Cancelling {len(server_tasks)} outstanding tasks")
     await asyncio.gather(*server_tasks, return_exceptions=True)
     await server.stop()
     loop.stop()
@@ -135,7 +136,7 @@ async def shutdown(signal, loop, server):
 async def run_model_cli(node: Node, inference_engine: InferenceEngine, model_name: str, prompt: str):
     shard = model_base_shards.get(model_name, {}).get(inference_engine.__class__.__name__)
     if not shard:
-        print(f"Error: Unsupported model '{model_name}' for inference engine {inference_engine.__class__.__name__}")
+        logger.error(f"Error: Unsupported model '{model_name}' for inference engine {inference_engine.__class__.__name__}")
         return
     tokenizer = await resolve_tokenizer(shard.model_id)
     request_id = str(uuid.uuid4())
@@ -146,16 +147,15 @@ async def run_model_cli(node: Node, inference_engine: InferenceEngine, model_nam
     prompt = tokenizer.apply_chat_template([{"role": "user", "content": prompt}], tokenize=False, add_generation_prompt=True)
 
     try:
-        print(f"Processing prompt: {prompt}")
+        logger.info(f"Processing prompt: {prompt}")
         await node.process_prompt(shard, prompt, None, request_id=request_id)
 
         _, tokens, _ = await callback.wait(lambda _request_id, tokens, is_finished: _request_id == request_id and is_finished, timeout=300)
 
-        print("\nGenerated response:")
-        print(tokenizer.decode(tokens))
+        logger.info("\nGenerated response:")
+        logger.info(tokenizer.decode(tokens))
     except Exception as e:
-        print(f"Error processing prompt: {str(e)}")
-        traceback.print_exc()
+        logger.exception(f"Error processing prompt: {str(e)}")
     finally:
         node.on_token.deregister(callback_id)
 
@@ -163,7 +163,7 @@ async def main():
     args = parse_arguments()
     print_yellow_exo()
     system_info = get_system_info()
-    print(f"Detected system: {system_info}")
+    logger.info(f"Detected system: {system_info}")
 
     shard_downloader, inference_engine = setup_inference_engine(args, system_info)
     node, topology_viz, server = setup_node(args, inference_engine)
@@ -195,7 +195,7 @@ if __name__ == "__main__":
     try:
         loop.run_until_complete(main())
     except KeyboardInterrupt:
-        print("Received keyboard interrupt. Shutting down...")
+        logger.info("Received keyboard interrupt. Shutting down...")
     finally:
         loop.run_until_complete(shutdown(signal.SIGTERM, loop, None))
         loop.close()
