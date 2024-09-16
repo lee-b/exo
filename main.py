@@ -124,7 +124,7 @@ async def async_main(args, node, api):
 
   # Use a more direct approach to handle signals
   def handle_exit():
-    asyncio.ensure_future(shutdown(signal.SIGTERM, loop))
+    asyncio.ensure_future(shutdown(signal.SIGTERM, loop, node.server))
 
   for s in [signal.SIGINT, signal.SIGTERM]:
     loop.add_signal_handler(s, handle_exit)
