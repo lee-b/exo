@@ -159,7 +159,7 @@ async def run_model_cli(node: Node, inference_engine: InferenceEngine, model_nam
     finally:
         node.on_token.deregister(callback_id)
 
-async def main():
+async def async_main():
     args = parse_arguments()
     print_yellow_exo()
     system_info = get_system_info()
@@ -193,7 +193,7 @@ if __name__ == "__main__":
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(main())
+        loop.run_until_complete(async_main())
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt. Shutting down...")
     finally:
