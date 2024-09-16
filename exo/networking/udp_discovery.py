@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import socket
 import time
 import traceback
@@ -8,6 +9,10 @@ from .discovery import Discovery
 from .peer_handle import PeerHandle
 from exo.topology.device_capabilities import DeviceCapabilities, device_capabilities, UNKNOWN_DEVICE_CAPABILITIES
 from exo.helpers import DEBUG, DEBUG_DISCOVERY
+
+
+logger = logging.getLogger(__name__)
+
 
 class ListenProtocol(asyncio.DatagramProtocol):
   def __init__(self, on_message: Callable[[bytes, Tuple[str, int]], Coroutine]):
@@ -34,7 +39,7 @@ class UDPDiscovery(Discovery):
     discovery_timeout: int = 30,
     device_capabilities: DeviceCapabilities = UNKNOWN_DEVICE_CAPABILITIES,
   ):
-    self.node_id = node_id
+    self.node_id = node_id + ":" + str(node_port)
     self.node_port = node_port
     self.listen_port = listen_port
     self.broadcast_port = broadcast_port
@@ -48,26 +53,33 @@ class UDPDiscovery(Discovery):
     self.cleanup_task = None
 
   async def start(self):
+    logging.debug("Beginning node discovery")
     self.device_capabilities = device_capabilities()
     self.broadcast_task = asyncio.create_task(self.task_broadcast_presence())
     self.listen_task = asyncio.create_task(self.task_listen_for_peers())
     self.cleanup_task = asyncio.create_task(self.task_cleanup_peers())
+    logging.debug("node discovery tasks scheduled.")
 
   async def stop(self):
+    logging.debug("Terminating node discovery")
     if self.broadcast_task: self.broadcast_task.cancel()
     if self.listen_task: self.listen_task.cancel()
     if self.cleanup_task: self.cleanup_task.cancel()
     if self.broadcast_task or self.listen_task or self.cleanup_task:
       await asyncio.gather(self.broadcast_task, self.listen_task, self.cleanup_task, return_exceptions=True)
+    logging.debug("node discovery tasks terminated")
 
   async def discover_peers(self, wait_for_peers: int = 0) -> List[PeerHandle]:
     if wait_for_peers > 0:
       while len(self.known_peers) < wait_for_peers:
-        if DEBUG_DISCOVERY >= 2: print(f"Current peers: {len(self.known_peers)}/{wait_for_peers}. Waiting for more peers...")
+        logger.debug(f"Current peers: {len(self.known_peers)}/{wait_for_peers}. Waiting for more peers...")
         await asyncio.sleep(0.1)
-    return [peer_handle for peer_handle, _, _ in self.known_peers.values()]
+    result = [peer_handle for peer_handle, _, _ in self.known_peers.values()]
+    logger.debug("Discovered peers: %r", result)
+    return result
 
   async def task_broadcast_presence(self):
+    logger.debug("Broadcasting node presence over UDP")
     while True:
       try:
         message = json.dumps({
@@ -76,43 +88,45 @@ class UDPDiscovery(Discovery):
           "grpc_port": self.node_port,
           "device_capabilities": self.device_capabilities.to_dict(),
         }).encode("utf-8")
-        if DEBUG_DISCOVERY >= 3: print(f"Broadcast presence: {message}")
+        logger.debug("Broadcast presence: %s", message)
 
         transport, _ = await asyncio.get_event_loop().create_datagram_endpoint(lambda: asyncio.DatagramProtocol(), local_addr=("0.0.0.0", 0), family=socket.AF_INET)
         sock = transport.get_extra_info("socket")
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         transport.sendto(message, ("<broadcast>", self.broadcast_port))
       except Exception as e:
-        print(f"Error in broadcast presence: {e}")
-        print(traceback.format_exc())
+        logger.error("Error in broadcast presence: %s", e)
+        logger.error(traceback.format_exc())
       finally:
         if transport:
           try:
             transport.close()
           except:
-            if DEBUG_DISCOVERY >= 2: print(f"Error closing transport: {e}")
-            if DEBUG_DISCOVERY >= 2: traceback.print_exc()
+            logger.error("Error closing transport: %s", e)
+            logger.error(traceback.print_exc())
         await asyncio.sleep(self.broadcast_interval)
 
   async def on_listen_message(self, data, addr):
     if not data:
       return
 
+    logger.debug("Received UDP discoverage message: %r", data)
+
     decoded_data = data.decode("utf-8", errors="ignore")
 
     # Check if the decoded data starts with a valid JSON character
     if not (decoded_data.strip() and decoded_data.strip()[0] in "{["):
-      if DEBUG_DISCOVERY >= 2: print(f"Received invalid JSON data from {addr}: {decoded_data[:100]}")
+      logger.debug(f"Received invalid JSON data from {addr}: {decoded_data[:100]}")
       return
 
     try:
       decoder = json.JSONDecoder(strict=False)
       message = decoder.decode(decoded_data)
     except json.JSONDecodeError as e:
-      if DEBUG_DISCOVERY >= 2: print(f"Error decoding JSON data from {addr}: {e}")
+      logger.error(f"Error decoding JSON data from {addr}: {e}")
       return
 
-    if DEBUG_DISCOVERY >= 2: print(f"received from peer {addr}: {message}")
+    logger.debug("received from peer %s: %s", addr, message)
 
     if message["type"] == "discovery" and message["node_id"] != self.node_id:
       peer_id = message["node_id"]
@@ -120,7 +134,7 @@ class UDPDiscovery(Discovery):
       peer_port = message["grpc_port"]
       device_capabilities = DeviceCapabilities(**message["device_capabilities"])
       if peer_id not in self.known_peers or self.known_peers[peer_id][0].addr() != f"{peer_host}:{peer_port}":
-        if DEBUG >= 1: print(f"Adding {peer_id=} at {peer_host}:{peer_port}. Replace existing peer_id: {peer_id in self.known_peers}")
+        logger.debug("Adding %s at %s:%s. Replace existing peer_id: %r", peer_id, peer_host, peer_port, peer_id in self.known_peers)
         self.known_peers[peer_id] = (
           self.create_peer_handle(peer_id, f"{peer_host}:{peer_port}", device_capabilities),
           time.time(),
@@ -130,7 +144,7 @@ class UDPDiscovery(Discovery):
 
   async def task_listen_for_peers(self):
     await asyncio.get_event_loop().create_datagram_endpoint(lambda: ListenProtocol(self.on_listen_message), local_addr=("0.0.0.0", self.listen_port))
-    if DEBUG_DISCOVERY >= 2: print("Started listen task")
+    logger.debug("Started listen task")
 
   async def task_cleanup_peers(self):
     while True:
@@ -140,12 +154,16 @@ class UDPDiscovery(Discovery):
           peer_handle.id() for peer_handle, connected_at, last_seen in self.known_peers.values()
           if (not await peer_handle.is_connected() and current_time - connected_at > self.discovery_timeout) or current_time - last_seen > self.discovery_timeout
         ]
-        if DEBUG_DISCOVERY >= 2: print("Peer statuses:", {peer_handle.id(): f"is_connected={await peer_handle.is_connected()}, {connected_at=}, {last_seen=}" for peer_handle, connected_at, last_seen in self.known_peers.values()})
+        
+        logger.debug("Peer statuses:")
+        for peer_handle, connected_at, last_seen in self.known_peers.values():
+          logger.debug("%r: is_connected=%s, connected_at=%r, last_seen=%r", peer_handle.id(), await peer_handle.is_connected(), connected_at, last_seen)
+
         for peer_id in peers_to_remove:
           if peer_id in self.known_peers: del self.known_peers[peer_id]
-          if DEBUG_DISCOVERY >= 2: print(f"Removed peer {peer_id} due to inactivity.")
+          logger.debug(f"Removed peer {peer_id} due to inactivity.")
       except Exception as e:
-        print(f"Error in cleanup peers: {e}")
-        print(traceback.format_exc())
+        logger.error(f"Error in cleanup peers: {e}")
+        logger.error(traceback.format_exc())
       finally:
         await asyncio.sleep(self.broadcast_interval)

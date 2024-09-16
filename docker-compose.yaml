@@ -1,0 +1,73 @@
+services:
+  exo-1:
+    build: .
+    image: exo
+
+    ports:
+      - "8811:8000"
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+    networks:
+      - exo
+
+
+  exo-2:
+    image: exo
+
+    ports:
+      - "8812:8000"
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+    networks:
+      - exo
+
+
+  exo-3:
+    image: exo
+
+    ports:
+      - "8813:8000"
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['2']
+              capabilities: [gpu]
+    networks:
+      - exo
+
+
+  exo-4:
+    image: exo
+
+    ports:
+      - "8814:8000"
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['3']
+              capabilities: [gpu]
+    networks:
+      - exo
+
+networks:
+  exo:
+    driver: bridge
+

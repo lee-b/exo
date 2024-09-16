@@ -71,10 +71,10 @@ def print_exo():
 
 
 def print_yellow_exo():
-  yellow = "\033[93m"  # ANSI escape code for yellow
-  reset = "\033[0m"  # ANSI escape code to reset color
-  print(f"{yellow}{exo_text}{reset}")
-
+#  yellow = "\033[93m"  # ANSI escape code for yellow
+#  reset = "\033[0m"  # ANSI escape code to reset color
+#  print(f"{yellow}{exo_text}{reset}")
+  pass
 
 def terminal_link(uri, label=None):
   if label is None:
