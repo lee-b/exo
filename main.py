@@ -6,6 +6,7 @@ import time
 import traceback
 import uuid
 import logging
+import sys
 from exo.orchestration.standard_node import StandardNode
 from exo.networking.grpc.grpc_server import GRPCServer
 from exo.networking.udp_discovery import UDPDiscovery
@@ -189,7 +190,7 @@ async def async_main():
         asyncio.create_task(api.run(port=args.chatgpt_api_port))  # Start the API server as a non-blocking task
         await asyncio.Event().wait()
 
-if __name__ == "__main__":
+def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -199,3 +200,7 @@ if __name__ == "__main__":
     finally:
         loop.run_until_complete(shutdown(signal.SIGTERM, loop, None))
         loop.close()
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
