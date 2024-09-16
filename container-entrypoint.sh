@@ -5,7 +5,7 @@ echo "Running exo..."
 /app-venv/bin/python ./main.py \
 	--disable-tui \
 	--wait-for-peers 2 \
-	#--debug \
+	--debug \
 	--discovery-timeout 10 \
 	"$@"
 
